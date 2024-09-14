@@ -1,7 +1,7 @@
 - 👋 Hi, I’m @TwelveEyez
 - 👀 I’m interested in finance and bjj (thx Jocko)
 - 🌱 I’m currently learning HTML and Japanese
-- 💞️ I’m looking to collaborate on IBAM internship seeking
+- 💞️ I’m actively applying for IB grad roles
 - 📫 How to reach me ig: freddie.mbe
 - 😄 Pronouns: He/Try me
 - ⚡ Fun fact: I'm an avid consumer of anime/manga
