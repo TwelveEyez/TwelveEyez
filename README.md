@@ -1,10 +1,9 @@
-- 👋 Hi, I’m @TwelveEyez
-- 👀 I’m interested in finance and bjj (thx Jocko)
-- 🌱 I’m currently learning HTML and Japanese
-- 💞️ I’m actively applying for IB grad roles
+- 👋 Hi, I’m @TwelveEyez (Arsène): I'm Interested in f1, fantastical literature and bjj (thx Jocko Willink)
+- 👀 Highly likely to find me at rolling at BJJ tournemants in London (Blue belt|-73.5 kg)
+- 🌱 Currently engaged as Global Market analyst @ AmplifyME
 - 📫 How to reach me ig: freddie.mbe
-- 😄 Pronouns: He/Try me
-- ⚡ Fun fact: I'm an avid consumer of anime/manga
+- 💞️ Actively applying for trading/brokerage roles across the front desks and operations 
+- ⚡ Fun fact: I once cycled 200+ km over 3 days starting in England and ending God knows where in Wales
 
 <!---
 TwelveEyez/TwelveEyez is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
