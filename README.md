@@ -1,4 +1,4 @@
-- 👋 Hi, I’m @TwelveEyez (Arsène): I'm Interested in f1, fantastical literature and bjj (thx Jocko Willink)
+- 👋 Hi, I’m @TwelveEyez (Arsène): I'm interested in F1, fiction, and Brazilian Jiu-Jitsu (thx Jocko Willink)
 - 👀 Highly likely to find me at rolling at BJJ tournemants in London (Blue belt|-73.5 kg)
 - 🌱 Currently engaged as Global Market analyst @ AmplifyME
 - 📫 How to reach me ig: freddie.mbe
