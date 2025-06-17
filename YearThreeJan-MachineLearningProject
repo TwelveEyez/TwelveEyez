@@ -1,0 +1,696 @@
+rm(list=ls())          # Clear environment # line 1
+
+library(readr)         # For read_csv
+library(MASS)          # For LDA and QDA
+library(class)         # For k-Nearest Neighbours (KNN)
+
+library(tree)          # For Classification Trees
+library(randomForest)  # For Random Forest and Bagging
+library(gbm)           # For Boosting
+library(glmnet)        # For Ridge and Lasso Classification
+
+library(leaps)         # For Subset Selection
+library(dplyr)         # For Data Manipulation
+library(pROC)          # For Receiver operating characteristic (ROC)
+library(caret)         # For trainControl
+
+# Read the data set
+nasdaq <- read_csv("Machine Learning/nasdaqv2.csv")
+
+nasdaq <- nasdaq  %>% dplyr::select(-TE5, -TE6, -DE4, -DE5, -DE6, -GBP, -Name)
+
+##################### Response and Lag transformation ##################### 
+
+columns <- c("Date", "Close", "Volume", "mom", "mom1", "mom2", "mom3", "ROC_10", "EMA_10", "DTB4WK", 
+             "DTB3", "DTB6", "DGS5", "DGS10", "Oil", "Gold", "DAAA", "DBAA", "JPY", "CAD", "CNY", 
+             "AAPL", "AMZN", "GE", "JNJ", "JPM", "MSFT", "WFC", "XOM", "FCHI", "FTSE", "GDAXI", 
+             "GSPC", "HSI", "DJI", "SSEC", "RUT", "NYSE", "TE1", "TE2", "TE3", "DE1", "DE2", "CTB3M", 
+             "CTB6M", "CTB1Y", "AUD", "Brent", "f.CAC", "f.copper", "oil", "f.DAX", "f.DJI", "EUR", 
+             "f.FTSE", "f.gold", "f.HSI", "f.KOPSI", "f.NASDAQ", "f.GAS", "f.Nikkei", "NZD", 
+             "f.silver", "f.RUSSEL", "f.SP", "CHF", "f.Dollar", "Dollar", "f.wheat", "XAG", "XAU")
+
+# Assign new column names
+colnames(nasdaq) <- columns   # 'f.' in column names indicates a future of the commodity
+
+names(nasdaq) # Command verifies that the column names have been updated correctly
+
+# This completes the initial data setup.
+
+
+# List of columns to apply lag transformation
+lag.columns <- columns[3:length(columns)]
+
+# Apply lag transformation to specified columns
+nasdaq[lag.columns] <- lapply(nasdaq[lag.columns], function(x) x - lag(x))
+
+lm.fit <- lm(Close ~ ., nasdaq)
+
+# High equals 1 if Close > previous Close; 0 otherwise
+nasdaq$Close <- as.factor(ifelse(nasdaq$Close > lag(nasdaq$Close), 1, 0))
+names(nasdaq)[names(nasdaq) == "Close"] <- "High"
+
+# Remove the first row with NA values from lag transformation
+nasdaq <- nasdaq[-1, ]
+
+# Remove rows with any missing values
+nasdaq <- na.omit(nasdaq)
+
+# attach(nasdaq)
+
+# Data is now ready for further analysis. 
+# The cleaned data set has 970 observations down from 1972
+
+##################### Classification w/ 16 predictors #####################
+
+# Define feature sets
+features <- data.frame(Volume, mom, mom1, mom2, mom3, ROC_10, EMA_10, DTB4WK, 
+                       JNJ, GSPC, DJI, NYSE, f.DJI, f.GAS, f.Nikkei, f.SP)
+
+predictors <- colnames(features)
+
+# Split data into training and testing sets
+split <- floor(0.5*nrow(nasdaq))
+train <- c(1:split)
+test <- c((split+1):nrow(nasdaq))
+
+# Training and Testing Data
+nasdaq.train <- nasdaq[train, ]
+High.train <- nasdaq$High[train]
+train.X = features[train, ]
+nasdaq.test <- nasdaq[test, ]
+High.test <- nasdaq$High[test]
+test.X = features[test, ]
+
+# Prepare for glm, lda, qda, tree
+formula <- as.formula(paste("High ~", paste(predictors, collapse = "+")))
+
+# Prepare for glmnet ie Ridge and Lasso
+Xvars <- model.matrix(High ~ ., nasdaq.train)[, -1]  # Exclude the intercept
+Y <- as.numeric(as.character(High.train))
+
+# Scale training data by storing the scaling parameters
+scaled_train <- scale(nasdaq.train[predictors])
+train_center <- attr(scaled_train, "scaled:center")
+train_scale <- attr(scaled_train, "scaled:scale")
+nasdaq.train[predictors] <- scaled_train
+
+# Scale test data using the training data's scaling parameters
+nasdaq.test[predictors] <- scale(nasdaq.test[predictors], center = train_center, scale = train_scale)
+
+# The data is now ready for model training and evaluation
+# 485 observations will be used in the training data set leaving 485 for testing
+
+##################### Ridge Logistic * #####################
+
+# Fit Ridge logistic regression using ALL predictors *
+ridge.mod <- glmnet(Xvars, Y, alpha = 0, family = "binomial")  # default = 10 folds
+
+# Cross-validation to find the best lambda
+set.seed(10)
+cv.ridge <- cv.glmnet(Xvars, Y, alpha = 0, family = "binomial")
+ridge.bestlam <- cv.ridge$lambda.min
+
+par(mfrow = c(1, 1))
+plot(ridge.mod, main="Ridge Trace", xlab="lambda", ylab="Cofficients")
+plot(cv.ridge, main = "Ridge Regression")
+
+# Predict on test data
+Xvars.test <- model.matrix(High ~ ., nasdaq.test)[, -1]
+ridge.prob <- predict(ridge.mod, s = ridge.bestlam, newx = Xvars.test, type = "response")
+
+# Define cutoff values for ridge
+cutoffs <- c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+
+# Evaluate Ridge model
+ridge.error <- matrix(nrow = length(cutoffs), ncol = 4)
+colnames(ridge.error) <- c("cutoff", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+for(i in 1:length(cutoffs)){
+  ridge.pred <- ifelse(ridge.prob > cutoffs[i], "Y", "N")
+  confusion <- table(ridge.pred, High.test)
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  cat("cutoff =", cutoffs[i], "\n")
+  print(confusion)
+  cat("Error: ", error, "\n\n") # Misclassification error rate
+  
+  ridge.error[i, ] <- c(cutoffs[i], error, fpos, fneg)
+}
+
+##################### Lasso Logistic * #####################
+
+# Fit Lasso logistic regression using ALL predictors *
+lasso.mod <- glmnet(Xvars, Y, alpha = 1, family = "binomial")  # default = 10 folds
+
+# Evaluate Lasso model
+lasso.error <- matrix(nrow = length(cutoffs), ncol = 4)
+colnames(lasso.error) <- c("cutoff", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Cross-validation to find the best lambda
+set.seed(10)
+cv.lasso <- cv.glmnet(Xvars, Y, alpha = 1, family = "binomial")
+lasso.bestlam <- cv.lasso$lambda.min
+
+# Plot Lasso Trace and Cross-Validaion plots
+par(mfrow = c(1, 1))
+plot(lasso.mod, main="Lasso Trace", xlab="lambda", ylab="Cofficients")
+plot(cv.lasso, main = "Lasso Regression")
+
+# Predict on test data
+lasso.prob <- predict(lasso.mod, s = lasso.bestlam, newx = Xvars.test, type = "response")
+
+# Define cutoff values for lasso
+cutoffs <- c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+
+for(i in 1:length(cutoffs)){
+  lasso.pred <- ifelse(lasso.prob > cutoffs[i], "Y", "N")
+  confusion <- table(lasso.pred, High.test)
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  cat("cutoff =", cutoffs[i], "\n")
+  print(confusion)
+  cat("Error: ", error, "\n\n") # Misclassification error rate
+  
+  lasso.error[i, ] <- c(cutoffs[i], error, fpos, fneg)
+}
+
+
+#####################
+##################### LDA and QDA #####################
+
+# Fit lda regression
+lda.train.fit <- lda(formula, data = nasdaq.train)
+
+# Predict probabilities
+lda.prob <- predict(lda.train.fit, nasdaq.test)
+
+# Define p values
+p.values <- c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+
+# Make a list for error rate, false positives and negatives
+lda.error <- matrix(nrow = length(p.values), ncol = 4)
+colnames(lda.error) <- c("p", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Perform LDA and find error rates for each p
+for(i in 1:length(p.values)){
+  lda.pred <- rep("N", nrow(nasdaq.test))
+  lda.pred[lda.prob$posterior[,2] > p.values[i]] <- "Y"
+  confusion <- table(lda.pred, High.test)  
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  cat("p =", p.values[i], "\n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+  
+  lda.error[i, ] <- c(p.values[i], error, fpos, fneg)
+}
+
+
+# Prepare the data
+formula <- as.formula(paste("High ~", paste(predictors, collapse = "+")))
+
+# Fit lda regression
+qda.train.fit <- qda(formula, data = nasdaq.train)
+
+# Predict probabilities
+qda.prob <- predict(qda.train.fit, nasdaq.test)
+
+# Define p values
+p.values <- c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+
+# Make a list for error rate, false positives and negatives
+qda.error <- matrix(nrow = length(p.values), ncol = 4)
+colnames(qda.error) <- c("p", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Perform QDA model and find error rates for each p
+for(i in 1:length(p.values)){
+  qda.pred <- rep("N", nrow(nasdaq.test))
+  qda.pred[qda.prob$posterior[,2] > p.values[i]] <- "Y"
+  confusion <- table(qda.pred, High.test)
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  cat("p =", p.values[i], "\n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+  
+  qda.error[i, ] <- c(p.values[i], error, fpos, fneg)
+}
+
+##################### KNN Regression #####################
+
+train.X <- scale(train.X) # features standardised for lda and qda (mean = 0, standard deviation = 1)
+test.X <- scale(test.X, center = attr(train.X, "scaled:center"), scale = attr(train.X, "scaled:scale"))
+
+# Define k values for KNN model
+k.values <- c(1, 5, 10, 20, 50, 100)
+knn.error <- matrix(nrow = length(k.values), ncol = 4)
+colnames(knn.error) <- c("k", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Perform KNN model and find error rates for each k
+for(i in 1:length(k.values)){
+  set.seed(10)
+  knn.pred <- knn(train.X, test.X, High.train, k.values[i]) 
+  confusion <- table(knn.pred, High.test)
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  cat("k =", k.values[i], "\n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+  
+  knn.error[i, ] <- c(k.values[i], error, fpos, fneg)
+}
+
+##################### Classification Tree #####################
+
+set.seed(10)
+tree.nasdaq  <- tree(formula, data = nasdaq.train)
+summary(tree.nasdaq)
+tree.pred <- predict(tree.nasdaq, newdata = nasdaq.test, type = "class")
+
+# Plot the tree structure and node labels
+par(mfrow = c(1, 1))
+plot(tree.nasdaq)
+text(tree.nasdaq, pretty = 0)
+title(main="Classification Tree (Size 22)")
+
+tree.error <- matrix(nrow = 2, ncol = 4)
+colnames(tree.error) <- c("Pruned", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Construct the initial tree matrix
+confusion <- table(tree.pred, High.test) 
+error <- 1 - (sum(diag(confusion)) / sum(confusion))
+fpos <- confusion[2,1] / sum(confusion[,1])
+fneg <- confusion[1,2] / sum(confusion[,2])
+{
+  cat("Tree Matrix \n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+}
+tree.error[1, ] <- c("N", error, fpos, fneg)
+
+
+# Cross Validation to find min size for pruning
+set.seed(10)
+cv.nasdaq <- cv.tree(tree.nasdaq)
+cv.nasdaq 
+which.min(cv.nasdaq$dev) #  min occurs at size 8 (location index=4)
+plot(cv.nasdaq$size, main="Cross-Validation",cv.nasdaq$dev, type = "b")
+
+
+# Pruning the Tree
+prune.nasdaq <- prune.tree(tree.nasdaq, best = 8)
+summary(prune.nasdaq)
+prune.pred <- predict(prune.nasdaq, newdata = nasdaq.test, type = "class")
+
+plot(prune.nasdaq)
+text(prune.nasdaq,pretty=0)
+title(main="Pruned Classification Tree (Size 8)")
+
+# Construct the pruned tree matrix
+confusion <- table(prune.pred, High.test) # Confusion matrix
+error <- 1 - (sum(diag(confusion)) / sum(confusion))
+fpos <- confusion[2,1] / sum(confusion[,1])
+fneg <- confusion[1,2] / sum(confusion[,2])
+{
+  cat("Pruned Tree Matrix \n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+}
+tree.error[2, ] <- c("Y", error, fpos, fneg)
+
+##################### Random Forests #####################
+
+trees = c(500, 1000)
+
+# Initialise error matrix for Random Forests
+rf.error <- matrix(nrow = length(trees), ncol = 4)
+colnames(rf.error) <- c("# Trees", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Calculate mtry for Random Forests
+mtry <- round(sqrt(length(predictors))) # mtry = 3.87 rounds to 4
+
+# Random Forests
+for (i in 1:length(trees)){
+  set.seed(10)
+  rf.nasdaq <- randomForest(formula, data = nasdaq.train, mtry = mtry, importance = TRUE, ntree = trees[i])
+  rf.pred <- predict(rf.nasdaq, newdata = nasdaq.test)
+  confusion <- table(rf.pred, High.test) 
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  # Random Forests Matrix
+  cat("n =", trees[i],"\n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+  
+  fp <- confusion[2,1]
+  fn <- confusion[1,2]
+  rf.error[i, ] <- c(trees[i], error, fp/sum(confusion[,1]), fn/sum(confusion[,2]))
+}
+
+varImpPlot(rf.nasdaq, main = "Random Forests (mtry = 4)")
+importance(rf.nasdaq)  # Higher value suggests predictor is more important for predictions
+
+# Strong:     ROC_10 and EMA_10 contribute significantly to reducing uncertainty.
+# Moderate:   mom, GSPC, and f.SP
+# Weak:       DTB4WK and f.GAS contribute the least to the model's predictive power.
+
+
+# Initialise error matrix for Random Forests and Bagging
+bagging.error <- matrix(nrow = length(trees), ncol = 4)
+colnames(rf.error) <- c("# Trees", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Calculate mtry for Bagging
+mtry <- length(predictors)  # Use all predictors for Bagging
+
+# Bagging
+for (i in 1:length(trees)){
+  set.seed(10)
+  bagging.nasdaq <- randomForest(formula, data = nasdaq.train, mtry = mtry, importance = TRUE, ntree = trees[i])
+  bagging.pred <- predict(bagging.nasdaq, newdata = nasdaq.test)
+  confusion <- table(bagging.pred, High.test) 
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  # Bagging Matrix
+  cat("n =", trees[i],"\n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+  
+  fp <- confusion[2,1]
+  fn <- confusion[1,2]
+  bagging.error[(i), ] <- c(trees[i], error, fp/sum(confusion[,1]), fn/sum(confusion[,2]))
+}
+
+varImpPlot(bagging.nasdaq, main = "Bagging (mtry = 16)")
+importance(bagging.nasdaq)  # Higher value suggests predictor is more important for predictions
+
+##################### Boosting #####################
+
+nasdaq.train$High <- as.numeric(Y)
+factor_vars <- names(which(sapply(nasdaq.train, is.factor)))
+nasdaq.train$Date <- NULL
+nasdaq.test$Date <- NULL
+
+for (var in factor_vars) {
+  nasdaq.test[[var]] <- factor(nasdaq.test[[var]], levels = levels(nasdaq.train[[var]]))
+  levels_var <- levels(nasdaq.train[[var]])
+  duplicated_levels <- levels_var[duplicated(levels_var)]
+  
+  if (length(duplicated_levels) > 0) {
+    cat("Variable", var, "has duplicated levels:", duplicated_levels, "\n")
+  }
+}
+
+# Define the shrinkage parameter
+lambda <- seq(from = 0.01, to = 0.1, by = 0.01) # 10 steps from 0.01 to 0.1
+boost.error <- matrix(nrow = length(lambda), ncol = 2)
+colnames(boost.error) <- c("lambda", "Error Rate")
+
+set.seed(10)
+for (i in 1:length(lambda)){
+  boosting <- gbm(High ~ ., data = nasdaq.train, distribution = "bernoulli", 
+                  n.trees = 1000, interaction.depth = 1, shrinkage = lambda[i], 
+                  verbose = FALSE)
+  
+  boosting.pred <- predict(boosting, nasdaq.test, n.trees = 1000, type = "response")
+  boosting.pred <- ifelse(boosting.pred > 0.5, 1, 0)
+  
+  confusion <- table(boosting.pred, High.test)
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))  
+  boost.error[i,] <- c(lambda[i], error)
+}
+
+boost.error
+
+# Extract lambda and error values as numeric vectors
+lambda.values <- as.numeric(boost.error[, 1])
+error.values <- as.numeric(boost.error[, 2])
+
+# Plot Test Error Rate vs. Lambda
+plot(lambda.values, error.values, type = "b",
+     xlab = "Lambda (Shrinkage Parameter)", ylab = "Test Error Rate",
+     main = "Boosting: Test Error Rate vs. Lambda")
+
+#####################
+##################### Step-wise Selection: FSS & BSS #####################
+
+# Define predictors and response
+Y <- as.character(High.train) 
+X <- nasdaq.train[, predictors]
+
+# Combine predictors and response into a data frame
+data <- data.frame(Y,X) 
+
+reg.full <- regsubsets(Y ~  ., data, nvmax = 10)
+reg.summary <- summary(reg.full)
+reg.summary
+
+# Forward step-wise selection
+reg.fwd <- regsubsets(Y ~ ., data, nvmax = length(predictors), method = "forward")
+fwd.summary <- summary(reg.fwd)
+
+# Plot RSS
+par(mfrow = c(2, 2))
+plot(fwd.summary$rss, main="FSS 1", xlab = "# Variables", ylab = "RSS", type = "l")
+
+# Plot Cp = 7
+plot(fwd.summary$cp, main="FSS 2", xlab = "# Variables", ylab = "Cp", type = 'l')
+min.cp.index <- which.min(fwd.summary$cp)
+points(min.cp.index, fwd.summary$cp[min.cp.index], col = "red", cex = 2, pch = 20)
+
+# Plot Adj R2 = 7
+plot(fwd.summary$adjr2, main="FSS 3", xlab = "# Variables", ylab = "Adjusted R²", type = "l")
+max.adjr2.index <- which.max(fwd.summary$adjr2)
+points(max.adjr2.index, fwd.summary$adjr2[max.adjr2.index], col = "red", cex = 2, pch = 20)
+
+# Plot BIC = 6
+plot(fwd.summary$bic, main="FSS 4", xlab = "# Variables", ylab = "BIC", type = 'l')
+min.bic.index <- which.min(fwd.summary$bic)
+points(min.bic.index, fwd.summary$bic[min.bic.index], col = "red", cex = 2, pch = 20)
+
+min.bic.index # FSS features contains 6 predictors
+
+coef(reg.fwd, id = min.bic.index)
+f6.features <- data.frame(mom, mom1, mom2, mom3, ROC_10, EMA_10)
+f6.predictors <- colnames(f6.features)
+# Check number of predictors = 16 -> 6
+summary(f6.predictors)
+
+# Reset formula for glm, lda, qda, tree
+formula <- as.formula(paste("High ~", paste(f6.predictors, collapse = "+")))
+
+
+# Backward step-wise selection
+reg.bwd <- regsubsets(Y ~ ., data, nvmax = length(predictors), method = "backward")
+bwd.summary <- summary(reg.bwd)
+
+# Plot RSS
+par(mfrow = c(2, 2))
+plot(bwd.summary$rss, main="BSS 1", xlab = "# Variables", ylab = "RSS", type = "l")
+
+# Plot Cp = 6
+plot(bwd.summary$cp, main="BSS 2", xlab = "# Variables", ylab = "Cp", type = 'l')
+min.cp.index <- which.min(bwd.summary$cp)
+points(min.cp.index, bwd.summary$cp[min.cp.index], col = "red", cex = 2, pch = 20)
+
+# Plot Adj R2 = 6
+plot(bwd.summary$adjr2, main="BSS 3", xlab = "# Variables", ylab = "Adjusted R²", type = "l")
+max.adjr2.index <- which.max(bwd.summary$adjr2)
+points(max.adjr2.index, bwd.summary$adjr2[max.adjr2.index], col = "red", cex = 2, pch = 20)
+
+# Plot BIC = 6
+plot(bwd.summary$bic, main="BSS 4", xlab = "# Variables", ylab = "BIC", type = 'l')
+min.bic.index <- which.min(bwd.summary$bic)
+points(min.bic.index, bwd.summary$bic[min.bic.index], col = "red", cex = 2, pch = 20)
+
+min.bic.index # BSS features also contains 6 predictors
+
+coef(reg.bwd, id = min.bic.index) # Identical predictors to FSS
+b6.features <- data.frame(mom, mom1, mom2, mom3, ROC_10, EMA_10)
+b6.predictors <- colnames(b6.features)
+
+# Check number of predictors = 16 -> 6
+summary(b6.predictors)
+
+
+# Check for correlation between momentum indicators
+cor(mom,mom1)
+cor(mom,mom2)
+cor(mom,mom3)
+cor(mom1,mom2)
+cor(mom1,mom3)
+cor(mom2,mom3)
+
+# Reset formula for glm, lda, qda, tree
+formula <- as.formula(paste("High ~", paste(b6.predictors, collapse = "+")))
+
+
+##################### Classification w/ 6 predictors
+##################### Logistic model #####################
+
+# Fit logistic regression
+log.train.fit <- glm(formula, data = nasdaq.train, family = "binomial")
+log.train.fit
+
+# 16 predictors used
+661.3 - 136.6 # large difference between null and residual deviance suggests better fit than null
+# 6 predictors used
+661-3 - 149.9 # slightly smaller difference but still very large; also AIC = 163.0 < 170.6 
+
+# Predict probabilities
+log.prob <- predict(log.train.fit, nasdaq.test, type = "response")
+
+# Define cutoff values
+cutoffs <- c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+
+# Make a list for error rate, false positives and negatives
+log.error <- matrix(nrow = length(cutoffs), ncol = 4)
+colnames(log.error) <- c("cutoff", "Error Rate", "F.Pos Rate", "F.Neg Rate")
+
+# Perform logistic model and find error rates for each cutoff value
+for(i in 1:length(cutoffs)){
+  log.pred <- ifelse(log.prob > cutoffs[i], "Y", "N")
+  confusion <- table(log.pred, High.test) # Confusion matrix
+  error <- 1 - (sum(diag(confusion)) / sum(confusion))
+  fpos <- confusion[2,1] / sum(confusion[,1])
+  fneg <- confusion[1,2] / sum(confusion[,2])
+  
+  cat("cutoff =", cutoffs[i], "\n")
+  print(confusion)
+  cat("Error: ", error*100, "% \n")
+  cat("F.Pos: ", fpos*100, "% \n")
+  cat("F.Neg: ", fneg*100, "% \n\n")
+  
+  log.error[i, ] <- c(cutoffs[i], error, fpos, fneg)
+}
+
+#####################
+##################### ROC/AUC plots ##################### 
+
+par(mfrow = c(1, 1))
+
+# Plot the ROC curve and calculate AUC for logistic model
+log.roc <- roc(response = High.test, predictor = log.prob)
+plot(log.roc, col = "black", main = "ROC curves for each Model")
+log.auc <- auc(log.roc)
+
+# Plot the ROC curve and calculate AUC for ridge/lasso
+ridge.roc <- roc(response = High.test, predictor = ridge.prob)
+lasso.roc <- roc(response = High.test, predictor = lasso.prob)
+plot(ridge.roc, col = "red", add = TRUE)
+plot(lasso.roc, col = "blue", add = TRUE)
+ridge.auc <- auc(ridge.roc)
+lasso.auc <- auc(lasso.roc)
+
+# Plot the ROC curve and calculate AUC for lda/qda
+lda.roc <- roc(High.test, lda.prob$posterior[,2])
+qda.roc <- roc(High.test, qda.prob$posterior[,2])
+plot(lda.roc, col = "yellow", add = TRUE)
+plot(qda.roc, col = "green", add = TRUE)
+lda.auc <- auc(lda.roc)
+qda.auc <- auc(qda.roc)
+
+# Plot the ROC curve and calculate AUC for knn 
+knn.prob <- as.numeric(knn.pred) - 1  # Convert factor to numeric
+knn.roc <- roc(High.test, knn.prob)
+plot(knn.roc, col = "cyan", add = TRUE) # Change add to compare with others
+knn.auc <- auc(knn.roc)
+
+# Predict probabilities for full/pruned trees
+tree.prob <- predict(tree.nasdaq, newdata = nasdaq.test, type = "vector")
+prune.prob <- predict(prune.nasdaq, newdata = nasdaq.test, type = "vector")
+
+# Plot the ROC curve and calculate AUC for full/pruned trees
+tree.roc <- roc(response = High.test, predictor = tree.prob[,2])
+prune.roc <- roc(response = High.test, predictor = prune.prob[,2])
+plot(tree.roc, col = "purple", add = TRUE) # Change add to compare with others
+plot(prune.roc, col = "pink", add = TRUE) # Change add to compare with others
+tree.auc <- auc(tree.roc)
+prune.auc <- auc(prune.roc)
+
+# Predict probabilities for Random Forest
+High.test <- as.factor(nasdaq.test$High)
+rf.pred <- predict(rf.nasdaq, newdata = nasdaq.test, type = "prob")
+# Check the column names to identify the positive class (usually "1")
+colnames(rf.pred)
+# Extract probabilities for the positive class "1"
+rf.prob_positive <- rf.pred[, "1"]
+# Generate the ROC curve for Random Forest
+rf.roc <- roc(response = High.test, predictor = rf.prob_positive)
+
+# Plot the ROC curve and calculate AUC for Random Forests
+plot(rf.roc, col = "brown", add = TRUE)
+rf.auc <- auc(rf.roc)
+
+# Predict probabilities for Boosting with bestlambda = 0.01
+boosting0.01 <- gbm(High ~ ., data = nasdaq.train, 
+                     distribution = "bernoulli", 
+                     n.trees = 1000, interaction.depth = 1, 
+                     shrinkage = 0.01, verbose = FALSE)
+boosting.prob <- predict(boosting0.01, nasdaq.test, 
+                         n.trees = 1000, type = "response")
+
+# Plot the ROC curve and calculate AUC fo Boosting
+boosting.roc <- roc(response = High.test, predictor = boosting.prob)
+boosting.roc <- roc(response = High.test, predictor = boosting.prob)
+plot(boosting.roc, col = "orange", add = TRUE)
+boosting.auc <- auc(boosting.roc)
+
+# Area under the Curve table
+auc.table <- rbind(log.auc, ridge.auc, lasso.auc, lda.auc, qda.auc, knn.auc, tree.auc, prune.auc, rf.auc, boosting.auc)
+colnames(auc.table) <- "Area-Under-the-Curve"
+auc.table
+
+#####################
+##################### Final Comparison ##################### 
+
+modelmin.error <- matrix(nrow = 10, ncol = 3)
+
+modelmin.error[1,] <- c("Logistic", min(log.error[1:nrow(log.error), 2], na.rm = FALSE), log.error[which.min(log.error[, "Error Rate"]), "cutoff"])
+modelmin.error[2,] <- c("Ridge", min(ridge.error[1:nrow(ridge.error), 2], na.rm = FALSE), ridge.error[which.min(ridge.error[, "Error Rate"]), "cutoff"])
+modelmin.error[3,] <- c("Lasso", min(lasso.error[1:nrow(lasso.error), 2], na.rm = FALSE), lasso.error[which.min(lasso.error[, "Error Rate"]), "cutoff"])
+modelmin.error[4,] <- c("LDA", min(lda.error[1:nrow(lda.error), 2], na.rm = FALSE), lda.error[which.min(lda.error[, "Error Rate"]), "p"])
+modelmin.error[5,] <- c("QDA", min(qda.error[1:nrow(qda.error), 2], na.rm = FALSE), qda.error[which.min(qda.error[, "Error Rate"]), "p"])
+modelmin.error[6,] <- c("KNN", min(knn.error[1:nrow(knn.error), 2], na.rm = FALSE), knn.error[which.min(log.error[, "Error Rate"]), "k"])
+modelmin.error[7,] <- c("Trees", tree.error[1, 2], "22")
+modelmin.error[8,] <- c("Pruned Trees", tree.error[2, 2], "8" )
+modelmin.error[9,] <- c("Forests", min(boost.error[1:nrow(rf.error), 2], na.rm = FALSE), "500 or 1000")
+modelmin.error[10,] <- c("Boosting", min(boost.error[1:nrow(boost.error), 2], na.rm = FALSE), boost.error[which.min(boost.error[, "Error Rate"]), "lambda"])
+
+colnames(modelmin.error) <- c("Method", "MinValue", "At")
+
+# Overall comparison
+modelmin.error 
+
+{best.model <- modelmin.error[which.min(modelmin.error[, "MinValue"]), "Method"]
+  cat("The best model for prediction is:", best.model)
+  cat("\nThe", best.model, "Error Rate is ", min(modelmin.error[1:nrow(modelmin.error), 2]))
+  cat(" and the Area-under-the-Curve for ROC is ", max(auc.table[1:nrow(auc.table), 1]))
+  }
